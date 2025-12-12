@@ -1,0 +1,80 @@
+name: Automatic File Size Check
+
+on:
+  workflow_dispatch:
+
+jobs:
+  run-afsck:
+    name: Run AFSCK
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: "17"
+          distribution: "temurin"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Copy template project
+        run: cp -r afsck_template afsck_blank
+
+      - name: Generate Gradle wrapper
+        working-directory: afsck_blank
+        run: gradle wrapper --gradle-version=8.11.1
+
+      - name: Build (before Rive)
+        working-directory: afsck_blank
+        run: ./gradlew assembleRelease bundleRelease --no-daemon
+
+      - name: Store build artifacts (before)
+        run: |
+          mkdir -p before/
+          cp afsck_blank/app/build/outputs/apk/release/app-release-unsigned.apk before/app-release.apk
+          cp afsck_blank/app/build/outputs/bundle/release/app-release.aab before/app-release.aab
+
+      - name: Add Rive dependency
+        working-directory: afsck_blank
+        run: |
+          sed -i "/implementation 'androidx.appcompat:appcompat/a\\    implementation 'app.rive:rive-android:+'" app/build.gradle
+
+      - name: Build (after Rive)
+        working-directory: afsck_blank
+        run: ./gradlew clean assembleRelease bundleRelease --no-daemon
+
+      - name: Store build artifacts (after)
+        run: |
+          mkdir -p after/
+          cp afsck_blank/app/build/outputs/apk/release/app-release-unsigned.apk after/app-release.apk
+          cp afsck_blank/app/build/outputs/bundle/release/app-release.aab after/app-release.aab
+
+      - name: Calculate and report sizes
+        run: |
+          BEFORE_APK=$(stat -c%s before/app-release.apk)
+          AFTER_APK=$(stat -c%s after/app-release.apk)
+          BEFORE_AAB=$(stat -c%s before/app-release.aab)
+          AFTER_AAB=$(stat -c%s after/app-release.aab)
+          DIFF_APK=$((AFTER_APK - BEFORE_APK))
+          DIFF_AAB=$((AFTER_AAB - BEFORE_AAB))
+
+          # Write to .size file
+          cat > android.size << EOF
+          apk_before=$BEFORE_APK
+          apk_after=$AFTER_APK
+          apk_diff=$DIFF_APK
+          aab_before=$BEFORE_AAB
+          aab_after=$AFTER_AAB
+          aab_diff=$DIFF_AAB
+          EOF
+
+          # Print summary
+          echo "APK: +$(numfmt --to=iec $DIFF_APK)"
+          echo "AAB: +$(numfmt --to=iec $DIFF_AAB)"
+          cat android.size
+
+      - name: Clean up
+        run: rm -rf afsck_blank before after
